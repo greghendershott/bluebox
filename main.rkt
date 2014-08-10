@@ -166,15 +166,17 @@
     [(provide . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
-         [((~datum rename-out) . stxs)
+         #:datum-literals (rename-out contract-out)
+         [(rename-out . stxs)
           (for ([stx (syntax->list #'stxs)])
             (syntax-parse stx
               [(from to) (add-rename! db #'from #'to)]
               [_ #f]))]
-         [((~datum contract-out) . stxs)
+         [(contract-out . stxs)
           (for ([stx (syntax->list #'stxs)])
             (syntax-parse stx
-              [((~datum rename) from to c)
+              #:datum-literals (rename)
+              [(rename from to c)
                (add-rename! db #'from #'to)
                (add-contract! db #'to #'c)
                (add-contract! db #'from #'c)]
@@ -272,8 +274,9 @@
 ;; positional arguments in their original order, first, then keyword
 ;; arguments sorted by #:keyword name.
 (define-syntax-class ctr-class
+  #:datum-literals (->* ->)
   #:attributes (reqs opts rtn rest)
-  (pattern ((~datum ->*)
+  (pattern (->*
             (req:ctr-arg ...)
             (opt:ctr-arg ...)
             (~optional (~seq #:rest rest:expr))
@@ -281,7 +284,7 @@
            #:attr reqs (sort-ctr-args #'(req.val ...))
            #:attr opts (sort-ctr-args #'(opt.val ...))
            #:attr rtn (syntax->datum #'rtn))
-  (pattern ((~datum ->) req:ctr-arg ... r:expr)
+  (pattern (-> req:ctr-arg ... r:expr)
            #:attr reqs (sort-ctr-args #'(req.val ...))
            #:attr opts '()
            #:attr rest #f
