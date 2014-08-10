@@ -1,14 +1,24 @@
 #lang racket
 
-(define-syntax (define-stuff stx)
-  (syntax-case stx ()
-    [(_ name)
-     #'(define (name)
-         42)]))
+(define-syntax-rule (define-define id)
+  (define (id) 0))
 
-(define-stuff forty-two)
+(define-define dd)
+
+(define-syntax-rule (d/p/c (id arg ...) contract e ...)
+  (begin
+    (define (id arg ...)
+      e ...)
+    (provide (contract-out [id contract]))))
+
+(d/p/c (dpc x)
+       (-> any/c any)
+       #t)
 
 (define (f x)
+  "Here's an optional doc string.
+
+It can be multiple lines, of course."
   0)
 
 (define (fd x [d0 0])
