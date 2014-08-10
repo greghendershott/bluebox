@@ -75,10 +75,12 @@
 (struct db [sigs
             contracts
             deflocs
+            docstrs
             old-names
             new-names] #:transparent)
 (define (make-db)
   (db (make-hasheq)
+      (make-hasheq)
       (make-hasheq)
       (make-hasheq)
       (make-hasheq)
@@ -90,6 +92,8 @@
   (hash-set! (db-contracts db) (syntax-e sym) (syntax->datum contract)))
 (define (add-defloc! db sym stx)
   (hash-set! (db-deflocs db) (syntax-e sym) stx))
+(define (add-docstr! db sym stx)
+  (hash-set! (db-docstrs db) (syntax-e sym) (syntax->datum stx)))
 (define (add-rename! db old new)
   (hash-set! (db-old-names db) (syntax-e new) (syntax-e old))
   (hash-set! (db-new-names db) (syntax-e old) (syntax-e new)))
@@ -100,6 +104,8 @@
   (hash-ref (db-contracts db) sym else))
 (define (get-defloc db sym [else #f])
   (hash-ref (db-deflocs db) sym else))
+(define (get-docstr db sym [else #f])
+  (hash-ref (db-docstrs db) sym else))
 (define (get-old-name db sym [else #f])
   (hash-ref (db-old-names db) sym else))
 (define (get-new-name db sym [else #f])
@@ -128,29 +134,36 @@
 ;; Note: Although `db` is returned for convenience, it is mutated (not
 ;; functionally updated).
 (define (walk stx [db (make-db)])
+  (define-splicing-syntax-class doc-str
+    (pattern (~optional s:str)))
   (syntax-parse stx
-    [((~datum begin) . stxs)
+    #:datum-literals 
+    (begin module #%module-begin define define/contract
+           provide provide/contract)
+    [(begin . stxs)
      (for-each (λ (stx) (walk stx db))
                (syntax->list #'stxs))]
-    [((~datum module) _ _ . stxs)
+    [(module _ _ . stxs)
      (for-each (λ (stx) (walk stx db))
                (syntax->list #'stxs))]
-    [((~datum #%module-begin) . stxs)
+    [(#%module-begin . stxs)
      (for-each (λ (stx) (walk stx db))
                (syntax->list #'stxs))]
-    [((~datum define) (s . as) . _)
-     (add-defloc! db #'s #'s)
-     (add-sig! db #'s #'as)]
-    [((~datum define/contract) (s . as) c . _)
+    [(define (s . as) d:doc-str . _)
      (add-defloc! db #'s #'s)
      (add-sig! db #'s #'as)
-     (add-contract! db #'s #'c)]
-    [((~datum provide/contract) . stxs)
+     (when (attribute d.s) (add-docstr! db #'s #'d.s))]
+    [(define/contract (s . as) c d:doc-str . _)
+     (add-defloc! db #'s #'s)
+     (add-sig! db #'s #'as)
+     (add-contract! db #'s #'c)
+     (when (attribute d.s) (add-docstr! db #'s #'d.s))]
+    [(provide/contract . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
          [(s c) (add-contract! db #'s #'c)]
          [_     #f]))]
-    [((~datum provide) . stxs)
+    [(provide . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
          [((~datum rename-out) . stxs)
@@ -289,8 +302,9 @@
 ;;
 ;; Note: `sig` is expected NOT to include the function name, which is
 ;; in `sym` instead.
-(define/contract (blue-box sym sig con)
-  (-> symbol? (or/c list? pair? syntax?) (or/c #f list? pair? syntax?) any)
+(define/contract (blue-box sym sig con doc)
+  (-> symbol? (or/c list? pair? syntax?) (or/c #f list? pair? syntax?) (or/c #f string?)
+      any)
   (define-values (sig-reqs sig-opts sig-rest)
     (syntax-parse sig
       [sig:sig-class (values (attribute sig.reqs)
@@ -350,7 +364,9 @@
     (display "  ")
     (display sig-rest)
     (display " : ")
-    (pretty-display con-rest)))
+    (pretty-display con-rest))
+  (when doc
+    (displayln doc)))
 
 ;; (blue-box 'name
 ;;           #'(req [opt 0] #:kw-req kw-req #:kw-opt [kw-opt 0])
@@ -361,7 +377,7 @@
 
 (define (db->blue-boxes db)
   (for ([(sym sig) (in-hash (db-sigs db))])
-    (blue-box sym sig (get-contract/effective db sym))))
+    (blue-box sym sig (get-contract/effective db sym) (get-docstr db sym))))
 
 (define (file->blue-boxes path)
   (db->blue-boxes (file->db path)))
@@ -444,8 +460,9 @@
 (require syntax/modresolve)
 ;; (file->blue-boxes (resolve-module-path 'net/url (current-load-relative-directory)))
 ;; (file->blue-lines (resolve-module-path 'net/url (current-load-relative-directory)))
+;; (file->blue-boxes (resolve-module-path 'aws/s3 (current-load-relative-directory)))
 
-;; (define _db (walk (file->syntax provide.rkt expand)))
+;; (define _db (file->db provide.rkt expand))
 ;; (db-sigs _db)
 ;; (db-contracts _db)
 ;; (db-old-names _db)
