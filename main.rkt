@@ -1,6 +1,9 @@
 #lang at-exp racket/base
 
-(require syntax/modread
+(require (for-syntax racket/base
+                     racket/syntax
+                     syntax/parse)
+         syntax/modread
          syntax/parse
          racket/match
          racket/function
@@ -9,7 +12,7 @@
          racket/list)
 
 ;; Return a syntax object (or #f) for the contents of `file`.
-(define (file->syntax file #:expand? expand?)
+(define (file->syntax file expand)
   (define-values (base _ __) (split-path file))
   (parameterize ([current-load-relative-directory base]
                  [current-namespace (make-base-namespace)])
@@ -17,13 +20,13 @@
                   (with-module-reading-parameterization
                    (thunk
                     (with-input-from-file file read-syntax/count-lines)))))
-    (if expand?
-        (expand stx) ;; do this while current-load-relative-directory is set
-        stx)))
+    (expand stx))) ;; do this while current-load-relative-directory is set
 
 (define (read-syntax/count-lines)
   (port-count-lines! (current-input-port))
   (read-syntax))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; db
 
@@ -73,6 +76,9 @@
   (for/or ([name names]) ;use "outermost" contract
     (get-contract db name)))
   
+(define (file->db path) ;path? -> db?
+  (walk (file->syntax path values)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; walk : syntax [db] -> hash
@@ -117,101 +123,8 @@
               [(s c) (add-contract! db #'s #'c)]
               [_ #f]))]
          [_ #f]))]
-    ;;
-    ;; patterns for fully-expanded syntax
-    ;;
-    ;; Ultimately this is the only approach that will work with all
-    ;; files, including those with their own define and provide macros
-    ;; and definer macros -- those will expand to primitives we _can_
-    ;; walk. However walking them is harder, especially keyword
-    ;; procedures and contracts.
-
-    ;; Plain procedure w/o any optional or keyword parameters
-    [((~datum define-values) (id:id) ((~datum lambda) sig:sig-class . stxs))
-     (add-defloc! db #'id #'id)
-     (add-sig! db #'id #'sig)]
-    
-    ;; Procedure with optional and/or keyword parameters
-    [((~datum define-values)
-      (id:id)
-      ((~datum let-values) (((_:id)
-                             ((~datum lambda) (_:id ...)
-                              nlv:nested-lv)))
-       ((~datum let-values) (_ ...)
-        ((~datum #%app)
-         _ ;lifted.N
-         _ ;λ
-         _ ;case-λ
-         _ ;'(some-keywords)
-         (quote kw ...)))))
-     (define (helper args kws*)
-       (define symbol->keyword (compose string->keyword symbol->string))
-       (define kws (car (syntax->datum kws*)))
-       (define xs
-         (append*
-          (for/list ([arg (syntax->datum args)])
-            (match arg
-              [(and xs (or `(,id (quote ,def))
-                           `(,id ,def)))
-               (if (member (symbol->keyword id) kws)
-                   `(,(symbol->keyword id) (,id ,def))
-                   `((,id ,def)))]
-              [id
-               (if (member (symbol->keyword id) kws)
-                   `(,(symbol->keyword id) ,id)
-                   `(,id))]))))
-       (datum->syntax args xs))
-     (add-defloc! db #'id #'id)
-     (add-sig! db #'id (helper #'nlv.ids #'(kw ...)))]
-
-    ;; Contract (provide)
-    [((~datum define-values)
-      (_)
-      ((~datum let-values) (((id:id)
-                             ((~datum #%app)
-                              (~datum coerce-contract)
-                              'provide/contract
-                              ((~datum #%app)
-                               (~datum flat-named-contract)
-                               ctr:expr
-                               _))))
-       _))
-     (add-contract! db #'id #'ctr)]
-    
-    ;; Contract (define/contract)
-    ;;
-    ;; I don't see how to recover the contract expression from
-    ;; fully-expanded syntax -- it is not preserved as the expression
-    ;; from the original source.
-    ;;
-    ;; I'm going to punt on this. Hopefully that's acceptable because
-    ;; define/contract is not the preferred form.
-
-    ;; Rename
-    [((~datum #%provide) . stxs)
-     (for ([stx (syntax->list #'stxs)])
-       (syntax-parse stx
-         [((~datum rename) from to) (add-rename! db #'from #'to)]
-         [_ #f]))]
-
-    
     [_ #f])
   db)
-
-(define (file->db path) ;path? -> db?
-  ;; Walk the unexpanded syntax -- then walk the fully-expanded, too.
-  (walk (file->syntax path #:expand? #t)
-        (walk (file->syntax path #:expand? #f))))
-
-(define-syntax-class nested-lv
-  (pattern ((~datum let-values) () ((~datum #%app) _ ...))
-           #:with ids '())
-  (pattern ((~datum let-values)
-            (((id:id) ((~datum if) _ _ default:expr))) lv:nested-lv)
-           #:with ids (cons (list #'id #'default) #'lv.ids))
-  (pattern ((~datum let-values) (((id:id) _ ...))
-            lv:nested-lv)
-           #:with ids (cons #'id #'lv.ids)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -487,8 +400,91 @@
 ;; (file->blue-boxes (resolve-module-path 'net/url (current-load-relative-directory)))
 ;; (file->blue-lines (resolve-module-path 'net/url (current-load-relative-directory)))
 
-;; (define _db (walk (file->syntax provide.rkt #:expand? #t)))
+;; (define _db (walk (file->syntax provide.rkt expand)))
 ;; (db-sigs _db)
 ;; (db-contracts _db)
 ;; (db-old-names _db)
 ;; (db-deflocs _db)
+
+;; (pretty-print
+;;  (syntax->datum
+;;   (exp/syntax (file->syntax provide.rkt values))))
+;; (pretty-print
+;;  (syntax->datum
+;;   (exp/procedure (file->syntax provide.rkt values))))
+
+;;(define stx (file->syntax provide.rkt values))
+
+;;(require (for-syntax syntax/to-string))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This works!  But, how to substitute our-module-begin for #%module-begin,
+;; or at least wrap all the module expressions with `partial-expand`.
+
+(begin-for-syntax
+  (define stop-ids (list #'define
+                         #'provide
+                         #'define/contract
+                         #'provide/contract
+                         )))
+
+(define-syntax (partial-expand stx)
+  (syntax-parse stx
+    [(_ e)
+     (printf "-> partial-expand ~v\n" (syntax->datum #'e))
+     (define out (local-expand #'e 'top-level stop-ids))
+     (printf "<- partial-expand ~v\n" (syntax->datum out))
+     out]))
+
+(define-syntax (our-module-begin stx)
+  (syntax-parse stx
+    [(_ e ...)
+     #'(begin (partial-expand e) ...)]))
+
+;; (our-module-begin
+;;  (define-syntax-rule (define-define id)
+;;    (define (id) 0))
+;;  (define-define dd)
+;;  (define/contract (f x) (-> any/c any) 0))
+
+;; (syntax->datum
+;;  #'(our-module-begin
+;;     (define-syntax-rule (define-define id)
+;;       (define (id) 0))
+;;     (define-define dd)
+;;     (define/contract (f x) (-> any/c any) 0)))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (expand-for-definitions stx)
+  (define db (make-db))
+  (void (expand (munge-module stx db)))
+  db)
+
+(define (munge-module stx db)
+  (syntax-parse stx
+    [(module id lang
+       (#%module-begin
+        mod-exp ...))
+     #`(module id lang
+         (#%module-begin
+          (define-syntax (partial-expand stx) ;; FIXME: name collision?
+            (syntax-case stx ()
+              [(_ e)
+               (let ([pe (local-expand #'e
+                                       'top-level
+                                       (list #'define
+                                             #'provide
+                                             #'define/contract
+                                             #'provide/contract))])
+                 (#,walk pe #,db)
+                 ;;(displayln (syntax->datum pe))
+                 #`#,pe)]))
+          (partial-expand mod-exp) ...))]))
+
+;;(pretty-print (syntax->datum (wrap stx)))
+;;(void (expand (wrap stx)))
+;;(pretty-print (syntax->datum (expand (wrap (file->syntax provide.rkt values)))))
+
+(db->blue-boxes (file->syntax provide.rkt expand-for-definitions))
