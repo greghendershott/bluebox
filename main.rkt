@@ -28,6 +28,38 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(define (expand-for-definitions stx)
+  (define db (make-db))
+  (void (expand (munge-module stx db)))
+  db)
+
+(define (munge-module stx db)
+  (syntax-parse stx
+    [(module id lang
+       (#%module-begin
+        mod-exp ...))
+     #`(module id lang
+         (#%module-begin
+          (require (for-syntax racket/base racket/contract))
+          (define-syntax (partial-expand stx) ;; FIXME: name collision?
+            (syntax-case stx ()
+              [(_ e)
+               (let ()
+                 (#,walk (local-expand #'e
+                                       'top-level
+                                       (list #'define
+                                             #'provide
+                                             #'define/contract
+                                             #'provide/contract))
+                         #,db)
+                 #'e)]))
+          (partial-expand mod-exp) ...))]))
+
+(define (file->db path) ;path? -> db?
+  (file->syntax path expand-for-definitions))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 ;;; db
 
 (struct db [sigs
@@ -76,9 +108,6 @@
   (for/or ([name names]) ;use "outermost" contract
     (get-contract db name)))
   
-(define (file->db path) ;path? -> db?
-  (walk (file->syntax path values)))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; walk : syntax [db] -> hash
@@ -405,86 +434,3 @@
 ;; (db-contracts _db)
 ;; (db-old-names _db)
 ;; (db-deflocs _db)
-
-;; (pretty-print
-;;  (syntax->datum
-;;   (exp/syntax (file->syntax provide.rkt values))))
-;; (pretty-print
-;;  (syntax->datum
-;;   (exp/procedure (file->syntax provide.rkt values))))
-
-;;(define stx (file->syntax provide.rkt values))
-
-;;(require (for-syntax syntax/to-string))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-;; This works!  But, how to substitute our-module-begin for #%module-begin,
-;; or at least wrap all the module expressions with `partial-expand`.
-
-(begin-for-syntax
-  (define stop-ids (list #'define
-                         #'provide
-                         #'define/contract
-                         #'provide/contract
-                         )))
-
-(define-syntax (partial-expand stx)
-  (syntax-parse stx
-    [(_ e)
-     (printf "-> partial-expand ~v\n" (syntax->datum #'e))
-     (define out (local-expand #'e 'top-level stop-ids))
-     (printf "<- partial-expand ~v\n" (syntax->datum out))
-     out]))
-
-(define-syntax (our-module-begin stx)
-  (syntax-parse stx
-    [(_ e ...)
-     #'(begin (partial-expand e) ...)]))
-
-;; (our-module-begin
-;;  (define-syntax-rule (define-define id)
-;;    (define (id) 0))
-;;  (define-define dd)
-;;  (define/contract (f x) (-> any/c any) 0))
-
-;; (syntax->datum
-;;  #'(our-module-begin
-;;     (define-syntax-rule (define-define id)
-;;       (define (id) 0))
-;;     (define-define dd)
-;;     (define/contract (f x) (-> any/c any) 0)))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(define (expand-for-definitions stx)
-  (define db (make-db))
-  (void (expand (munge-module stx db)))
-  db)
-
-(define (munge-module stx db)
-  (syntax-parse stx
-    [(module id lang
-       (#%module-begin
-        mod-exp ...))
-     #`(module id lang
-         (#%module-begin
-          (define-syntax (partial-expand stx) ;; FIXME: name collision?
-            (syntax-case stx ()
-              [(_ e)
-               (let ([pe (local-expand #'e
-                                       'top-level
-                                       (list #'define
-                                             #'provide
-                                             #'define/contract
-                                             #'provide/contract))])
-                 (#,walk pe #,db)
-                 ;;(displayln (syntax->datum pe))
-                 #`#,pe)]))
-          (partial-expand mod-exp) ...))]))
-
-;;(pretty-print (syntax->datum (wrap stx)))
-;;(void (expand (wrap stx)))
-;;(pretty-print (syntax->datum (expand (wrap (file->syntax provide.rkt values)))))
-
-(db->blue-boxes (file->syntax provide.rkt expand-for-definitions))
