@@ -1,8 +1,8 @@
 #lang at-exp racket/base
 
 (require (for-syntax racket/base
-                     racket/syntax
                      syntax/parse)
+         racket/syntax
          syntax/modread
          syntax/parse
          racket/match
@@ -28,7 +28,7 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (expand-for-definitions stx)
+(define (expand-finding-definitions-and-contracts stx)
   (define db (make-db))
   (void (expand (munge-module stx db)))
   db)
@@ -36,12 +36,22 @@
 (define (munge-module stx db)
   (syntax-parse stx
     [(module id lang
-       (#%module-begin
-        mod-exp ...))
+       (#%module-begin mod-exps ...))
+     ;; Wrap every module-level expression in a macro `partial-expand`
+     ;; that does a `local-expand` to certain forms where it is
+     ;; convenient to discover definitions and contracts, using
+     ;; `walk`, then return the original form for further expansion.
+     (define/with-syntax partial-expand (gensym)) ;avoid name collision
+     (define/with-syntax (exps ...)
+       (for/list ([mod-exp (syntax->list #'(mod-exps ...))])
+         (syntax-parse mod-exp
+           #:datum-literals (module+)
+           [(module+ . _) mod-exp]
+           [_ #`(partial-expand #,mod-exp)])))
      #`(module id lang
          (#%module-begin
           (require (for-syntax racket/base racket/contract))
-          (define-syntax (partial-expand stx) ;; FIXME: name collision?
+          (define-syntax (partial-expand stx)
             (syntax-case stx ()
               [(_ e)
                (let ()
@@ -53,10 +63,10 @@
                                              #'provide/contract))
                          #,db)
                  #'e)]))
-          (partial-expand mod-exp) ...))]))
+          exps ...))]))
 
 (define (file->db path) ;path? -> db?
-  (file->syntax path expand-for-definitions))
+  (file->syntax path expand-finding-definitions-and-contracts))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -114,8 +124,14 @@
 ;;
 ;; Walk the syntax looking for define and provide forms, adding
 ;; information to db.
+;;
+;; Note: Although `db` is returned for convenience, it is mutated (not
+;; functionally updated).
 (define (walk stx [db (make-db)])
   (syntax-parse stx
+    [((~datum begin) . stxs)
+     (for-each (λ (stx) (walk stx db))
+               (syntax->list #'stxs))]
     [((~datum module) _ _ . stxs)
      (for-each (λ (stx) (walk stx db))
                (syntax->list #'stxs))]
