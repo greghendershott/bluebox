@@ -11,8 +11,9 @@
          racket/contract
          racket/list)
 
-;; Return a syntax object (or #f) for the contents of `file`.
-(define (file->syntax file expand)
+;; Get the contents of a file as a syntax object, apply the `expand`
+;; function and return.
+(define (file->syntax file [expand values])
   (define-values (base _ __) (split-path file))
   (parameterize ([current-load-relative-directory base]
                  [current-namespace (make-base-namespace)])
@@ -20,7 +21,9 @@
                   (with-module-reading-parameterization
                    (thunk
                     (with-input-from-file file read-syntax/count-lines)))))
-    (expand stx))) ;; do this while current-load-relative-directory is set
+    ;; Do this while current-load-relative-directory is set, so that
+    ;; `require`s work.
+    (and stx (expand stx))))
 
 (define (read-syntax/count-lines)
   (port-count-lines! (current-input-port))
@@ -219,19 +222,20 @@
 (define-syntax-class sig-class
   #:attributes (reqs opts rest)
   (pattern (a:sig-arg ...)
-           #:attr reqs (sort-sig-args #'(a.val ...) #t)
-           #:attr opts (sort-sig-args #'(a.val ...) #f)
+           #:attr reqs (filter&sort-sig-args #'(a.val ...) #t)
+           #:attr opts (filter&sort-sig-args #'(a.val ...) #f)
            #:attr rest #f)
   (pattern (a:sig-arg ... . r:id)
-           #:attr reqs (sort-sig-args #'(a.val ...) #t)
-           #:attr opts (sort-sig-args #'(a.val ...) #f)
+           #:attr reqs (filter&sort-sig-args #'(a.val ...) #t)
+           #:attr opts (filter&sort-sig-args #'(a.val ...) #f)
            #:attr rest #'r))
 
-(define (sort-sig-args stx req?)
-  ;; Expects stx to be a list of lists, where `first` is the contract,
-  ;; `second` is a required? boolean, and `third` is the value to use
-  ;; when sorting. Sorts and returns a list of just the first items
-  ;; (i.e. discards the sort-by values).
+(define (filter&sort-sig-args stx req?)
+  ;; Helper function for sig-class. Expects stx to be a list of lists,
+  ;; where for each inner list `first` is the contract, `second` is a
+  ;; `required?` boolean, and `third` is the value to use when
+  ;; sorting. Sorts and returns a list of just the first items (i.e.
+  ;; discards the sort-by values).
   (map first
        (sort (filter (λ (v)
                        (equal? (second v) req?))
@@ -258,17 +262,7 @@
 ;;   [((~literal ->) x:ctr-arg)
 ;;    #'(x.sort-val)])
 
-(define (sort-ctr-args stx)
-  ;; Expects stx to be a list of lists, where `first` is the contract
-  ;; and `second` is the value to use when sorting. Sorts and returns
-  ;; a list of just the first items (i.e. discards the sort-by
-  ;; values).
-  (map first
-       (sort (syntax->datum stx)
-             string<?
-             #:key second)))
-
-;; Syntax class for matching contracts. Returns 3 plain (non-syntax)
+;; Syntax class for matching contracts. Returns 3 plain (non-syntax):
 ;; Required argument contracts (sorted), Optional argument contracts
 ;; (sorted), and return contract. The arguments are sorted to
 ;; positional arguments in their original order, first, then keyword
@@ -276,19 +270,28 @@
 (define-syntax-class ctr-class
   #:datum-literals (->* ->)
   #:attributes (reqs opts rtn rest)
-  (pattern (->*
-            (req:ctr-arg ...)
-            (opt:ctr-arg ...)
-            (~optional (~seq #:rest rest:expr))
-            _rtn:expr)
+  (pattern (->* (req:ctr-arg ...)
+                (opt:ctr-arg ...)
+                (~optional (~seq #:rest rest:expr))
+                _rtn:expr)
            #:attr reqs (sort-ctr-args #'(req.val ...))
            #:attr opts (sort-ctr-args #'(opt.val ...))
-           #:attr rtn (syntax->datum #'rtn))
+           #:attr rtn (syntax->datum #'_rtn))
   (pattern (-> req:ctr-arg ... r:expr)
            #:attr reqs (sort-ctr-args #'(req.val ...))
            #:attr opts '()
            #:attr rest #f
            #:attr rtn (syntax->datum #'r)))
+
+(define (sort-ctr-args stx)
+  ;; Helper function for ctr-class. Expects stx to be a list of lists,
+  ;; where `first` is the contract and `second` is the value to use
+  ;; when sorting. Sorts and returns a list of just the first items
+  ;; (i.e. discards the sort-by values).
+  (map first
+       (sort (syntax->datum stx)
+             string<?
+             #:key second)))
 
 ;; (syntax-parse '(-> any/c #:kw1 int? #:kw0 char? any)
 ;;   [ctr:ctr-class
@@ -325,17 +328,20 @@
   ;; (pretty-print (list sig-reqs sig-opts
   ;;                     con-reqs con-opts con-rtn))
   ;; [1] Display the signature
-  (define sig-opt-ids
-    (append* (map (compose reverse cdr reverse flatten) sig-opts)))
+  (define sig-opt-kws/ids
+    (append* (for/list ([sig sig-opts])
+               (match sig
+                 [(list (? keyword? kw) (list id def)) (list kw id)]
+                 [(list id def) (list id)]))))
   ;; FIXME: pretty-print doesn't really wrap correctly, we should do
   ;; it ourselves: 1. keep `#:kw kw` on same line. 2. Take into
   ;; account the `-> return?` for wrapping.
   (pretty-display/no-newline
    `(,sym
      ,@(append* sig-reqs)
-     ,@(if (empty? sig-opt-ids) '() '(#\[))
-     ,@sig-opt-ids
-     ,@(if (empty? sig-opt-ids) '() '(#\]))
+     ,@(if (empty? sig-opt-kws/ids) '() '(#\[))
+     ,@sig-opt-kws/ids
+     ,@(if (empty? sig-opt-kws/ids) '() '(#\]))
      ,@(if sig-rest `(#\. ,sig-rest) '())
      ))
   ;; [1a] Including the return type if any
@@ -353,9 +359,10 @@
   (for ([s sig-opts]
         [c con-opts])
     (display "  ")
-    (define-values (id def) (match s
-                              [(list kw (list id def)) (values id def)]
-                              [(list id def) (values id def)]))
+    (define-values (id def)
+      (match s
+        [(list (? keyword? kw) (list id def)) (values id def)]
+        [(list id def) (values id def)]))
     (display id)
     (display " : ")
     (pretty-display/no-newline c)

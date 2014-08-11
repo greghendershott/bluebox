@@ -49,24 +49,14 @@ It can be multiple lines, of course."
 (define/contract (rest x . xs)
   (->* (integer?) () #:rest integer? integer?)
   0)
-;; ;;;
 
-;; #|
-
-;; (require "provide.rkt")
-;; (pretty-print
-;;  (for/list ([sym '(f r dc pc pcr)])
-;;    (match (identifier-binding (namespace-symbol->identifier sym))
-;;      [(list source-mpi source-id
-;;             nominal-source-mpi nominal-source-id
-;;             source-phase import-phase nominal-export-phase)
-;;       (list sym "source" source-id "nominal" nominal-source-id)])))
-
-;; ;; ==>
-;; ;; '((f "source" f "nominal" f)
-;; ;;   (r "source" -r "nominal" r)
-;; ;;   (dc "source" dc "nominal" dc)
-;; ;;   (pc "source" provide/contract-id-pc.9 "nominal" pc)
-;; ;;   (pcr "source" provide/contract-id-pcr.13 "nominal" pcr))
-
-;; |#
+(define/contract (foo r0
+                      r1
+                      #:kw kw
+                      [opt0 (list 0)]
+                      #:kwopt [kwopt (list 1)])
+  (->* (integer? string? #:kw boolean?)
+       (list? #:kwopt list?)
+       integer?)
+  0)
+  
