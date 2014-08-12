@@ -1,12 +1,9 @@
 #lang at-exp racket/base
 
-(require (for-syntax racket/base
-                     syntax/parse)
-         racket/syntax
+(require racket/syntax
          syntax/modread
          syntax/parse
          racket/match
-         racket/function
          racket/pretty
          racket/contract
          racket/list)
@@ -16,14 +13,13 @@
 (define/contract (file->syntax file proc)
   (-> path? (-> syntax? any/c) any/c)
   (define-values (base _ __) (split-path file))
-  (parameterize ([current-load-relative-directory base]
-                 [current-namespace (make-base-namespace)])
-    (define stx (with-handlers ([exn:fail? (const #f)])
+  (parameterize ([current-load-relative-directory base])
+    (define stx (with-handlers ([exn:fail? (λ () #f)])
                   (with-module-reading-parameterization
-                   (thunk
+                   (λ ()
                     (with-input-from-file file read-syntax/count-lines)))))
-    ;; Do this while current-load-relative-directory is set, so that
-    ;; relative `require`s work.
+    ;; Call `proc` while current-load-relative-directory is set, so
+    ;; that relative `require`s work.
     (and stx (proc stx))))
 
 (define (read-syntax/count-lines)
@@ -56,18 +52,20 @@
        (for/list ([mod-exp (syntax->list #'(mod-exps ...))])
          (syntax-parse mod-exp
            ;; FIXME: Why doesn't #:literals work here?
-           #:datum-literals (module+) ;module+ can't be wrapped
-           [(module+ . _) mod-exp]
+           #:datum-literals (module+) ;module+ can't be wrapped...
+           [(module+ . _) mod-exp]    ;...so leave it as-is
            [_ #`(partial-expand #,mod-exp)])))
      #`(module id lang
          (#%module-begin
-          (require (for-syntax racket/base racket/contract))
+          (require (for-syntax racket/base))
           (define-syntax (partial-expand stx)
             (syntax-case stx ()
               [(_ e)
                (begin
                  (#,walk (local-expand #'e
-                                       'top-level
+                                       'top-level ;QUESTION: Why
+                                                  ;doesn't 'module
+                                                  ;work here?
                                        (list #'define
                                              #'provide
                                              #'define/contract
@@ -77,7 +75,8 @@
           new-mod-exps ...))]))
 
 (define (file->db path) ;path? -> db?
-  (file->syntax path expand-finding-definitions-and-contracts))
+  (parameterize ([current-namespace (make-base-namespace)])
+    (file->syntax path expand-finding-definitions-and-contracts)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -154,8 +153,7 @@
   (define-splicing-syntax-class doc-str
     (pattern (~optional s:str)))
   (syntax-parse stx
-    ;; FIXME: Why doesn't #:literals work here?
-    #:datum-literals
+    #:literals
     (begin module #%module-begin define define/contract
            provide provide/contract)
     [(begin . stxs)
@@ -184,8 +182,7 @@
     [(provide . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
-         ;; FIXME: Why doesn't #:literals work here?
-         #:datum-literals (rename-out contract-out)
+         #:literals (rename-out contract-out)
          [(rename-out . stxs)
           (for ([stx (syntax->list #'stxs)])
             (syntax-parse stx
