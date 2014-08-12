@@ -38,6 +38,12 @@
 ;; discover definitions and contracts, using `walk`, then return the
 ;; original form for further expansion.
 ;;
+;; Note: The expand/hide function from macro-debugger/expand does what
+;; I want -- but very slowly, since under the hood it's deriving and
+;; storing all the expansion steps. Very slowly means 90 seconds vs. 1
+;; second for the approach I'm using here. I'd *love* to simply use
+;; expand/hide, but can't.
+;;
 ;; QUESTION: Is there a better way to do this? More or less, I want to
 ;; override #%module-begin. The only way I can figure out how to do so
 ;; for any arbitrary module that uses any arbitrary lang, is to munge
