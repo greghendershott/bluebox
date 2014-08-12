@@ -11,9 +11,10 @@
          racket/contract
          racket/list)
 
-;; Get the contents of a file as a syntax object, apply the `expand`
-;; function and return.
-(define (file->syntax file [expand values])
+;; Get the contents of a file as a syntax object, and return the
+;; result of applying the supplied function.
+(define/contract (file->syntax file proc)
+  (-> path? (-> syntax? any/c) any/c)
   (define-values (base _ __) (split-path file))
   (parameterize ([current-load-relative-directory base]
                  [current-namespace (make-base-namespace)])
@@ -22,8 +23,8 @@
                    (thunk
                     (with-input-from-file file read-syntax/count-lines)))))
     ;; Do this while current-load-relative-directory is set, so that
-    ;; `require`s work.
-    (and stx (expand stx))))
+    ;; relative `require`s work.
+    (and stx (proc stx))))
 
 (define (read-syntax/count-lines)
   (port-count-lines! (current-input-port))
@@ -36,19 +37,26 @@
   (void (expand (munge-module stx db)))
   db)
 
+;; Wrap every module-level expression in a macro `partial-expand` that
+;; does a `local-expand` to certain forms where it is convenient to
+;; discover definitions and contracts, using `walk`, then return the
+;; original form for further expansion.
+;;
+;; QUESTION: Is there a better way to do this? More or less, I want to
+;; override #%module-begin. The only way I can figure out how to do so
+;; for any arbitrary module that uses any arbitrary lang, is to munge
+;; the syntax object here. Although this works for the examples I've
+;; tried so far, is it actually correct and reliable in general?
 (define (munge-module stx db)
   (syntax-parse stx
     [(module id lang
        (#%module-begin mod-exps ...))
-     ;; Wrap every module-level expression in a macro `partial-expand`
-     ;; that does a `local-expand` to certain forms where it is
-     ;; convenient to discover definitions and contracts, using
-     ;; `walk`, then return the original form for further expansion.
      (define/with-syntax partial-expand (gensym)) ;avoid name collision
-     (define/with-syntax (exps ...)
+     (define/with-syntax (new-mod-exps ...)
        (for/list ([mod-exp (syntax->list #'(mod-exps ...))])
          (syntax-parse mod-exp
-           #:datum-literals (module+)
+           ;; FIXME: Why doesn't #:literals work here?
+           #:datum-literals (module+) ;module+ can't be wrapped
            [(module+ . _) mod-exp]
            [_ #`(partial-expand #,mod-exp)])))
      #`(module id lang
@@ -57,7 +65,7 @@
           (define-syntax (partial-expand stx)
             (syntax-case stx ()
               [(_ e)
-               (let ()
+               (begin
                  (#,walk (local-expand #'e
                                        'top-level
                                        (list #'define
@@ -66,7 +74,7 @@
                                              #'provide/contract))
                          #,db)
                  #'e)]))
-          exps ...))]))
+          new-mod-exps ...))]))
 
 (define (file->db path) ;path? -> db?
   (file->syntax path expand-finding-definitions-and-contracts))
@@ -122,6 +130,12 @@
     [#f (list)]
     [s (cons s (realer-names db s))]))
 
+;; If `nom` has been renamed one or more times, then it may have one
+;; or more contracts. Return the "effective" one. Here we use the
+;; "outermost" one, because it is closest to what the user perceives
+;; the function to be. (This isn't necessarily the "most restrictive"
+;; contract, which might also be interesting, but I think is N/A for
+;; this purpose.)
 (define (get-contract/effective db nom)
   (define names (reverse (cons nom (realer-names db nom))))
   (for/or ([name names]) ;use "outermost" contract
@@ -140,7 +154,8 @@
   (define-splicing-syntax-class doc-str
     (pattern (~optional s:str)))
   (syntax-parse stx
-    #:datum-literals 
+    ;; FIXME: Why doesn't #:literals work here?
+    #:datum-literals
     (begin module #%module-begin define define/contract
            provide provide/contract)
     [(begin . stxs)
@@ -169,6 +184,7 @@
     [(provide . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
+         ;; FIXME: Why doesn't #:literals work here?
          #:datum-literals (rename-out contract-out)
          [(rename-out . stxs)
           (for ([stx (syntax->list #'stxs)])
@@ -178,6 +194,7 @@
          [(contract-out . stxs)
           (for ([stx (syntax->list #'stxs)])
             (syntax-parse stx
+              ;; FIXME: Why doesn't #:literals work here?
               #:datum-literals (rename)
               [(rename from to c)
                (add-rename! db #'from #'to)
@@ -268,6 +285,7 @@
 ;; positional arguments in their original order, first, then keyword
 ;; arguments sorted by #:keyword name.
 (define-syntax-class ctr-class
+  ;; FIXME: Why doesn't #:literals work here?
   #:datum-literals (->* ->)
   #:attributes (reqs opts rtn rest)
   (pattern (->* (req:ctr-arg ...)
@@ -412,33 +430,30 @@
                                   (syntax->datum (attribute con.rest)))
                              (attribute con.rtn))]
       [_ (values '() '() #f #f)]))
-  ;; (define sig-opt-ids
-  ;;   (append* (map (compose reverse cdr reverse flatten) sig-opts)))
   (display "(")
   (display sym)
   (for ([s sig-reqs]
         [c (or con-reqs (make-list (length sig-reqs) #f))])
-    (display " {")
-    (for ([v s]) (display v))
-    (display " : ")
-    (pretty-display/no-newline c)
-    (display "}"))
+    (match s
+      [(list (? keyword? kw) id) (printf " ~a ~a:~a" kw id c)]
+      [(list id)                 (printf    " ~a:~a"    id c)]))
   (unless (empty? sig-opts)
-    (display " [")
     (for ([s sig-opts]
-          [c (or con-opts (make-list (length sig-opts) #f))])
-      (display " {")
-      (for ([v s]) (display v))
-      (display " : ")
-      (pretty-display/no-newline c)
-      (display "}"))
-    (display "]"))
+          [c (if (empty? con-opts) (make-list (length sig-opts) #f) con-opts)])
+      (match s
+        [(list (? keyword? kw) (list id def))
+         (if c
+             (printf " ~a ~a:~a=~a" kw id c def)
+             (printf " ~a ~a=~a" kw id def))]
+        [(list id def)
+         (if c
+             (printf " ~a:~a=~a" id c def)
+             (printf " ~a=~a" id def))])))
   (when (and sig-rest con-rest)
-    (display " {")
+    (display " ")
     (display sig-rest)
-    (display " : ")
-    (pretty-display/no-newline con-rest)
-    (display "}"))
+    (display ":")
+    (pretty-display/no-newline con-rest))
   (display ")")
   (when con-rtn (display " -> ") (display con-rtn))
   (newline))

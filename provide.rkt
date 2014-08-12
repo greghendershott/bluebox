@@ -60,3 +60,5 @@ It can be multiple lines, of course."
        integer?)
   0)
   
+(define (bar [x 0])
+  0)
