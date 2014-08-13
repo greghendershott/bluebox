@@ -217,15 +217,15 @@
 
 (struct blue
   (sym        ;symbol? : The function name
-   sig        ;list?  : The full args list, not including `sym`
-   sig-reqs   ;list?  : The required args
-   sig-opts   ;list?  : The optional args
-   sig-rest   ;list?  : The rest arg
-   con        ;(or/c #f list?) : The contract
-   con-reqs   ;(or/c #f list?) : The contract pieces for required args
-   con-opts   ;(or/c #f list?) : The contract pieces for optional args
-   con-rest   ;(or/c #f list?) : The contract for the rest arg
-   con-rtn    ;(or/c #f list?) : The contract for the return value
+   sig        ;list? : The full arguments list, NOT including `sym`
+   sig-reqs   ;list? : The required args
+   sig-opts   ;list? : The optional args
+   sig-rest   ;list? : The rest arg
+   con        ;(or/c #f (listof sexpr?)) : The contract (if any)
+   con-reqs   ;(or/c #f (listof sexpr?)) : Required args' contracts
+   con-opts   ;(or/c #f (listof sexpr?)) : Optional args' contracts
+   con-rest   ;(or/c #f (listof sexpr?)) : Rest arg's contract
+   con-rtn    ;(or/c #f sexpr?)          : Return value contract
    doc)       ;(or/c #f string?) : The doc string
   #:transparent)
 
