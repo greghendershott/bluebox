@@ -156,35 +156,39 @@
 ;; Note: Although `db` is returned for convenience, it is mutated (not
 ;; functionally updated).
 (define (walk stx [db (make-db)])
-  (define-splicing-syntax-class doc-str
-    (pattern (~optional s:str)))
   (syntax-parse stx
     #:literals
     (begin module #%module-begin define define/contract
            provide provide/contract)
-    [(begin . stxs)
-     (for-each (λ (stx) (walk stx db))
-               (syntax->list #'stxs))]
-    [(module _ _ . stxs)
-     (for-each (λ (stx) (walk stx db))
-               (syntax->list #'stxs))]
-    [(#%module-begin . stxs)
-     (for-each (λ (stx) (walk stx db))
-               (syntax->list #'stxs))]
-    [(define (s . as) d:doc-str . _)
-     (add-defloc! db #'s #'s)
-     (add-sig! db #'s #'as)
-     (when (attribute d.s) (add-docstr! db #'s #'d.s))]
-    [(define/contract (s . as) c d:doc-str . _)
-     (add-defloc! db #'s #'s)
-     (add-sig! db #'s #'as)
-     (add-contract! db #'s #'c)
-     (when (attribute d.s) (add-docstr! db #'s #'d.s))]
+    ;;
+    ;; Just walk recursively
+    ;;
+    [(begin . stxs) (for ([stx (syntax->list #'stxs)])
+                      (walk stx db))]
+    [(module _id _lang . stxs) (for ([stx (syntax->list #'stxs)])
+                                 (walk stx db))]
+    [(#%module-begin . stxs) (for ([stx (syntax->list #'stxs)])
+                               (walk stx db))]
+    ;;
+    ;; Definitions (and maybe contracts)
+    ;;
+    [(define (id . args) (~optional doc:str) . _)
+     (add-defloc! db #'id #'id)
+     (add-sig! db #'id #'args)
+     (when (attribute doc) (add-docstr! db #'id #'doc))]
+    [(define/contract (id . args) con (~optional doc:str) . _)
+     (add-defloc! db #'id #'id)
+     (add-sig! db #'id #'args)
+     (add-contract! db #'id #'con)
+     (when (attribute doc) (add-docstr! db #'id #'doc))]
+    ;;
+    ;; Provides (and maybe contracts and renames)
+    ;;
     [(provide/contract . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
-         [(s c) (add-contract! db #'s #'c)]
-         [_     #f]))]
+         [(id con) (add-contract! db #'id #'con)]
+         [_        #f]))]
     [(provide . stxs)
      (for ([stx (syntax->list #'stxs)])
        (syntax-parse stx
@@ -197,17 +201,57 @@
          [(contract-out . stxs)
           (for ([stx (syntax->list #'stxs)])
             (syntax-parse stx
-              ;; FIXME: Why doesn't #:literals work here?
+              ;; QUESTION: Why doesn't #:literals work here?
               #:datum-literals (rename)
-              [(rename from to c)
+              [(rename from to con)
                (add-rename! db #'from #'to)
-               (add-contract! db #'to #'c)
-               (add-contract! db #'from #'c)]
-              [(s c) (add-contract! db #'s #'c)]
+               (add-contract! db #'to #'con)
+               (add-contract! db #'from #'con)]
+              [(id con) (add-contract! db #'id #'con)]
               [_ #f]))]
          [_ #f]))]
     [_ #f])
   db)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(struct blue
+  (sym        ;symbol? : The function name
+   sig        ;list?  : The full args list, not including `sym`
+   sig-reqs   ;list?  : The required args
+   sig-opts   ;list?  : The optional args
+   sig-rest   ;list?  : The rest arg
+   con        ;(or/c #f list?) : The contract
+   con-reqs   ;(or/c #f list?) : The contract pieces for required args
+   con-opts   ;(or/c #f list?) : The contract pieces for optional args
+   con-rest   ;(or/c #f list?) : The contract for the rest arg
+   con-rtn    ;(or/c #f list?) : The contract for the return value
+   doc)       ;(or/c #f string?) : The doc string
+  #:transparent)
+
+(define/contract (sym->blue db sym)
+  (-> db? symbol? blue?)
+  (define sig (get-sig db sym))
+  (define-values (sig-reqs sig-opts sig-rest)
+    (syntax-parse sig
+      [sig:sig-class (values (attribute sig.reqs)
+                             (attribute sig.opts)
+                             (and (attribute sig.rest)
+                                  (syntax->datum (attribute sig.rest))))]))
+  (define con (get-contract/effective db sym))
+  (define-values (con-reqs con-opts con-rest con-rtn)
+    (syntax-parse con
+      [con:ctr-class (values (attribute con.reqs)
+                             (attribute con.opts)
+                             (and (attribute con.rest)
+                                  (syntax->datum (attribute con.rest)))
+                             (attribute con.rtn))]
+      [_ (values '() '() #f #f)]))
+  (define doc (get-docstr db sym))
+  (blue sym
+        sig sig-reqs sig-opts sig-rest
+        con con-reqs con-opts con-rest con-rtn
+        doc))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -231,13 +275,6 @@
            #:attr val #`[(id)
                          #t
                          ""]))
-
-;; (syntax-parse #'(x #:kw0 kw0)
-;;   [(x:sig-arg ...)
-;;    #'((x.id
-;;        x.pos?
-;;        x.req?
-;;        x.sort-val) ...)])
 
 (define-syntax-class sig-class
   #:attributes (reqs opts rest)
@@ -263,11 +300,7 @@
              string<?
              #:key third)))
 
-;; (syntax-parse #'(a . rest) ;;#'(x #:kw kw [y 0] #:kw-opt [kw-opt 0])
-;;   [sig:sig-class
-;;    (displayln (syntax->datum #'sig))
-;;    (displayln (attribute sig.reqs))
-;;    #t])
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; Contracts
 
@@ -278,15 +311,11 @@
   (pattern (~seq ctr:expr)
            #:attr val #`[ctr ""]))
 
-;; (syntax-parse #'(-> #:kw0 any/c)
-;;   [((~literal ->) x:ctr-arg)
-;;    #'(x.sort-val)])
-
-;; Syntax class for matching contracts. Returns 3 plain (non-syntax):
-;; Required argument contracts (sorted), Optional argument contracts
-;; (sorted), and return contract. The arguments are sorted to
-;; positional arguments in their original order, first, then keyword
-;; arguments sorted by #:keyword name.
+;; Syntax class for matching contracts. Returns 3 plain (non-syntax)
+;; attributes: Required argument contracts (sorted), Optional argument
+;; contracts (sorted), and return contract. The arguments are sorted
+;; to positional arguments in their original order, first, then
+;; keyword arguments sorted by #:keyword name.
 (define-syntax-class ctr-class
   ;; FIXME: Why doesn't #:literals work here?
   #:datum-literals (->* ->)
@@ -314,40 +343,15 @@
              string<?
              #:key second)))
 
-;; (syntax-parse '(-> any/c #:kw1 int? #:kw0 char? any)
-;;   [ctr:ctr-class
-;;    (list (attribute ctr.reqs)
-;;          (attribute ctr.opts)
-;;          (attribute ctr.rtn))])
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; blue-box : symbol stx stx -> string
+;; print-blue-box : blue? -> any
 ;;
-;; Combine a signature and a contract into a classic Racket
-;; documentation "blue box" summary.
-;;
-;; Note: `sig` is expected NOT to include the function name, which is
-;; in `sym` instead.
-(define/contract (blue-box sym sig con doc)
-  (-> symbol? (or/c list? pair? syntax?) (or/c #f list? pair? syntax?) (or/c #f string?)
-      any)
-  (define-values (sig-reqs sig-opts sig-rest)
-    (syntax-parse sig
-      [sig:sig-class (values (attribute sig.reqs)
-                             (attribute sig.opts)
-                             (and (attribute sig.rest)
-                                  (syntax->datum (attribute sig.rest))))]))
-  (define-values (con-reqs con-opts con-rest con-rtn)
-    (syntax-parse con
-      [con:ctr-class (values (attribute con.reqs)
-                             (attribute con.opts)
-                             (and (attribute con.rest)
-                                  (syntax->datum (attribute con.rest)))
-                             (attribute con.rtn))]
-      [_ (values '() '() #f #f)]))
-  ;; (pretty-print (list sig-reqs sig-opts
-  ;;                     con-reqs con-opts con-rtn))
+;; A classic Racket documentation "blue box" summary.
+(define/contract (print-blue-box b)
+  (-> blue? any)
+  (match-define (blue sym sig sig-reqs sig-opts sig-rest
+                      con con-reqs con-opts con-rest con-rtn doc) b)
   ;; [1] Display the signature
   (define sig-opt-kws/ids
     (append* (for/list ([sig sig-opts])
@@ -399,40 +403,22 @@
   (when doc
     (displayln doc)))
 
-;; (blue-box 'name
-;;           #'(req [opt 0] #:kw-req kw-req #:kw-opt [kw-opt 0])
-;;           #'(->*
-;;             (req? #:kw kw-req? #:kw-very-long kw-very-long?)
-;;             (opt? #:kw-opt kw-opt?)
-;;             rtn?))
-
 (define (db->blue-boxes db)
-  (for ([(sym sig) (in-hash (db-sigs db))])
-    (blue-box sym sig (get-contract/effective db sym) (get-docstr db sym))))
+  (for ([sym (in-hash-keys (db-sigs db))])
+    (print-blue-box (sym->blue db sym))))
 
 (define (file->blue-boxes path)
   (db->blue-boxes (file->db path)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; blue-line (one-liner format)
-
-(define/contract (blue-line sym sig con)
-  (-> symbol? (or/c list? pair? syntax?) (or/c #f list? pair? syntax?) any)
-    (define-values (sig-reqs sig-opts sig-rest)
-    (syntax-parse sig
-      [sig:sig-class (values (attribute sig.reqs)
-                             (attribute sig.opts)
-                             (and (attribute sig.rest)
-                                  (syntax->datum (attribute sig.rest))))]))
-  (define-values (con-reqs con-opts con-rest con-rtn)
-    (syntax-parse con
-      [con:ctr-class (values (attribute con.reqs)
-                             (attribute con.opts)
-                             (and (attribute con.rest)
-                                  (syntax->datum (attribute con.rest)))
-                             (attribute con.rtn))]
-      [_ (values '() '() #f #f)]))
+;; print-blue-line : blue? -> any
+;;
+;; A one-line format, more suitable for e.g. eldoc status bar.
+(define/contract (print-blue-line b)
+  (-> blue? any)
+  (match-define (blue sym sig sig-reqs sig-opts sig-rest
+                      con con-reqs con-opts con-rest con-rtn doc) b)
   (display "(")
   (display sym)
   (for ([s sig-reqs]
@@ -462,8 +448,8 @@
   (newline))
 
 (define (db->blue-lines db)
-  (for ([(sym sig) (in-hash (db-sigs db))])
-    (blue-line sym sig (get-contract/effective db sym))))
+  (for ([sym (in-hash-keys (db-sigs db))])
+    (print-blue-line (sym->blue db sym))))
 
 (define (file->blue-lines path)
   (db->blue-lines (file->db path)))
@@ -486,9 +472,9 @@
 ;; (file->blue-lines provide.rkt)
 
 (require syntax/modresolve)
-;; (file->blue-boxes (resolve-module-path 'net/url (current-load-relative-directory)))
-;; (file->blue-lines (resolve-module-path 'net/url (current-load-relative-directory)))
-;; (file->blue-boxes (resolve-module-path 'aws/s3 (current-load-relative-directory)))
+;; (file->blue-boxes (resolve-module-path 'net/url current-load-relative-directory))
+;; (file->blue-lines (resolve-module-path 'net/url current-load-relative-directory))
+;; (file->blue-boxes (resolve-module-path 'aws/s3 current-load-relative-directory))
 
 ;; (define _db (file->db provide.rkt expand))
 ;; (db-sigs _db)
