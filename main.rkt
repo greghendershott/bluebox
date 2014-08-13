@@ -69,7 +69,7 @@
      (define/with-syntax (new-mod-exps ...)
        (for/list ([mod-exp (syntax->list #'(mod-exps ...))])
          (syntax-parse mod-exp
-           ;; FIXME: Why doesn't #:literals work here?
+           ;; QUESTION: Why doesn't #:literals work here?
            #:datum-literals (module+) ;module+ can't be wrapped...
            [(module+ . _) mod-exp]    ;...so leave it as-is
            [_ #`(partial-expand #,mod-exp)])))
@@ -329,7 +329,7 @@
 ;; to positional arguments in their original order, first, then
 ;; keyword arguments sorted by #:keyword name.
 (define-syntax-class ctr-class
-  ;; FIXME: Why doesn't #:literals work here?
+  ;; QUESTION: Why doesn't #:literals work here?
   #:datum-literals (->* ->)
   #:attributes (reqs opts rtn rest)
   (pattern (->* (req:ctr-arg ...)
