@@ -4,9 +4,21 @@
          syntax/modread
          syntax/parse
          racket/match
-         racket/pretty
          racket/contract
          racket/list)
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Because `pretty-display` behaves like `pretty-displayln` but we
+;; usually want the former (no newline).
+(require (rename-in racket/pretty [pretty-display pretty-displayln]))
+(define (pretty-display v)
+  (define oos (open-output-string))
+  (pretty-displayln v oos)
+  (define s (get-output-string oos))
+  (display (substring s 0 (sub1 (string-length s))))) ;; not trailing \n
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;; Get the contents of a file as a syntax object, and return the
 ;; result of applying the supplied function.
@@ -361,7 +373,7 @@
   ;; FIXME: pretty-print doesn't really wrap correctly, we should do
   ;; it ourselves: 1. keep `#:kw kw` on same line. 2. Take into
   ;; account the `-> return?` for wrapping.
-  (pretty-display/no-newline
+  (pretty-display
    `(,sym
      ,@(append* sig-reqs)
      ,@(if (empty? sig-opt-kws/ids) '() '(#\[))
@@ -379,7 +391,8 @@
     (display "  ")
     (display (car (reverse s)))
     (display " : ")
-    (pretty-display c))
+    (pretty-display c)
+    (newline))
   ;; [2b] Optional
   (for ([s sig-opts]
         [c con-opts])
@@ -390,7 +403,7 @@
         [(list id def) (values id def)]))
     (display id)
     (display " : ")
-    (pretty-display/no-newline c)
+    (pretty-display c)
     (display " = ")
     (print def)
     (newline))
@@ -399,7 +412,8 @@
     (display "  ")
     (display sig-rest)
     (display " : ")
-    (pretty-display con-rest))
+    (pretty-display con-rest)
+    (newline))
   (when doc
     (displayln doc)))
 
@@ -442,7 +456,7 @@
     (display " ")
     (display sig-rest)
     (display ":")
-    (pretty-display/no-newline con-rest))
+    (pretty-display con-rest))
   (display ")")
   (when con-rtn (display " -> ") (display con-rtn))
   (newline))
@@ -453,14 +467,6 @@
 
 (define (file->blue-lines path)
   (db->blue-lines (file->db path)))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(define (pretty-display/no-newline v)
-  (define oos (open-output-string))
-  (pretty-display v oos)
-  (define s (get-output-string oos))
-  (display (substring s 0 (sub1 (string-length s))))) ;; not trailing \n
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
