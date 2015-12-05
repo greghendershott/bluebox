@@ -1,3 +1,8 @@
+> **NOTE**: This was an early experiment. The final form in
+> racket-mode turned out to be [defn.rkt].
+
+[defn.rkt]: https://github.com/greghendershott/racket-mode/blob/master/defn.rkt
+
 This is an experiment to extract "blue boxes" from any Racket source
 file (not just functions that have blue boxes available via installed
 Scribble documentation).
